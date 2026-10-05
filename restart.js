@@ -1,69 +1,233 @@
- /**
- * restart.js — Restart Bot Process (Owner Only)
- * Aliases: .restart, .reboot, .reload
- * 
- * Tries PM2 first (production servers), falls back to process.exit
- * for nodemon/panels that auto-restart on crash.
- */
-
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const https = require('https');
 const { exec } = require('child_process');
 
-async function execute(sock, msg, botData, args) {
-    const chatId = msg.key.remoteJid;
-    if (!chatId) return null;
+const COMMANDS_DIR = __dirname;
+const GITHUB_ZIP =
+    'https://github.com/oxbotmd/commands/archive/refs/heads/main.zip';
 
-    // ── Send warning first (before process dies) ──────────────────────────
-    try {
-        await sock.sendMessage(chatId, {
-            text: '🔄 *Restarting Bot...*\n\nBot will be back in 5-10 seconds.'
-        }, { quoted: msg });
-    } catch {}
+function downloadFile(url, destination) {
+    return new Promise((resolve, reject) => {
+        https.get(url, {
+            headers: {
+                'User-Agent': 'OxBot'
+            }
+        }, (response) => {
 
-    // ── Wait for message to send before killing process ────────────────────
-    await new Promise(r => setTimeout(r, 1500));
+            if (
+                response.statusCode >= 300 &&
+                response.statusCode < 400 &&
+                response.headers.location
+            ) {
+                response.resume();
 
-    // ── Try PM2 first ──────────────────────────────────────────────────────
-    try {
-        await new Promise((resolve, reject) => {
-            exec('pm2 restart all', (error, stdout, stderr) => {
-                if (error) reject(error);
-                else resolve(stdout || stderr);
+                return downloadFile(
+                    response.headers.location,
+                    destination
+                ).then(resolve).catch(reject);
+            }
+
+            if (response.statusCode !== 200) {
+                response.resume();
+                return reject(
+                    new Error(
+                        'GitHub returned HTTP ' + response.statusCode
+                    )
+                );
+            }
+
+            const file = fs.createWriteStream(destination);
+
+            response.pipe(file);
+
+            file.on('finish', () => {
+                file.close(resolve);
+            });
+
+            file.on('error', reject);
+
+        }).on('error', reject);
+    });
+}
+
+function runCommand(command) {
+    return new Promise((resolve, reject) => {
+        exec(command, {
+            maxBuffer: 10 * 1024 * 1024
+        }, (error, stdout, stderr) => {
+
+            if (error) {
+                return reject(error);
+            }
+
+            resolve({
+                stdout,
+                stderr
             });
         });
-        console.log('[restart] PM2 restart successful');
+    });
+}
+
+async function updateCommands() {
+
+    const tempDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'oxbot-update-')
+    );
+
+    const zipFile = path.join(
+        tempDir,
+        'commands.zip'
+    );
+
+    const extractDir = path.join(
+        tempDir,
+        'extract'
+    );
+
+    try {
+
+        console.log('[restart] Downloading latest commands...');
+
+        await downloadFile(
+            GITHUB_ZIP,
+            zipFile
+        );
+
+        fs.mkdirSync(
+            extractDir,
+            { recursive: true }
+        );
+
+        await runCommand(
+            'unzip -q "' +
+            zipFile +
+            '" -d "' +
+            extractDir +
+            '"'
+        );
+
+        const folders = fs.readdirSync(extractDir);
+
+        const githubFolder = folders.find(
+            name => name.startsWith('commands-')
+        );
+
+        if (!githubFolder) {
+            throw new Error(
+                'GitHub commands folder was not found'
+            );
+        }
+
+        const sourceDir = path.join(
+            extractDir,
+            githubFolder
+        );
+
+        const files = fs.readdirSync(sourceDir);
+
+        for (const file of files) {
+
+            if (file === '.git') {
+                continue;
+            }
+
+            const source = path.join(
+                sourceDir,
+                file
+            );
+
+            const destination = path.join(
+                COMMANDS_DIR,
+                file
+            );
+
+            fs.rmSync(
+                destination,
+                {
+                    recursive: true,
+                    force: true
+                }
+            );
+
+            fs.cpSync(
+                source,
+                destination,
+                {
+                    recursive: true
+                }
+            );
+        }
+
+        console.log('[restart] Commands updated successfully.');
+
+    } finally {
+
+        fs.rmSync(
+            tempDir,
+            {
+                recursive: true,
+                force: true
+            }
+        );
+    }
+}
+
+async function execute(sock, msg, botData, args) {
+
+    const chatId = msg.key.remoteJid;
+
+    if (!chatId) {
         return null;
-    } catch (e) {
-        console.log('[restart] PM2 not available, using process.exit');
     }
 
-    // ── Fallback: process.exit — nodemon/panels auto-restart on exit ─────
     try {
-        // If running under PM2 but "pm2 restart all" failed,
-        // try restarting just this process by its name or ID
-        const pm2Name = process.env.PM2_NAME || process.env.name || 'oxbot';
+
+        await sock.sendMessage(
+            chatId,
+            {
+                text: '🔄 *Updating commands...*'
+            },
+            { quoted: msg }
+        );
+
+        await updateCommands();
+
+        await sock.sendMessage(
+            chatId,
+            {
+                text: '✅ *Commands updated successfully!*'
+            },
+            { quoted: msg }
+        );
+
+    } catch (error) {
+
+        console.error(
+            '[restart] Update failed:',
+            error
+        );
+
         try {
-            await new Promise((resolve, reject) => {
-                exec(`pm2 restart ${pm2Name}`, (error, stdout) => {
-                    if (error) reject(error);
-                    else resolve(stdout);
-                });
-            });
-            console.log(`[restart] PM2 restart "${pm2Name}" successful`);
-            return null;
+            await sock.sendMessage(
+                chatId,
+                {
+                    text: '❌ *Failed to update commands!*'
+                },
+                { quoted: msg }
+            );
         } catch {}
 
-        // Last resort: just exit and let the process manager handle it
-        console.log('[restart] Exiting process (hoping manager restarts it)');
-        setTimeout(() => process.exit(0), 500);
-    } catch {}
+    }
 
     return null;
 }
 
 module.exports = {
-    name:     'restart',
-    aliases:  ['reboot', 'reload'],
-    desc:     'Restart the bot process',
+    name: 'restart',
+    aliases: ['reboot', 'reload'],
+    desc: 'Update commands from GitHub',
     category: 'owner',
-    execute,
-};  
+    execute
+};
