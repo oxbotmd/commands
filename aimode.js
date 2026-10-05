@@ -147,7 +147,7 @@ function getIdentityReply(sock, text, msg) {
 // ★ AI API (Groq + Whisper) ★
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const GROQ_API_KEY = 'api key';
+const GROQ_API_KEY = '54ff3f250be8c2cfd47dfe96b5538b583d569932';
 const GROQ_MODEL   = 'openai/gpt-oss-120b';
 const WHISPER_MODEL = 'whisper-large-v3-turbo';
 
