@@ -1,178 +1,4 @@
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const https = require('https');
 const { exec } = require('child_process');
-
-const COMMANDS_DIR = __dirname;
-const GITHUB_ZIP =
-    'https://github.com/oxbotmd/commands/archive/refs/heads/main.zip';
-
-function downloadFile(url, destination) {
-    return new Promise((resolve, reject) => {
-        https.get(url, {
-            headers: {
-                'User-Agent': 'OxBot'
-            }
-        }, (response) => {
-
-            if (
-                response.statusCode >= 300 &&
-                response.statusCode < 400 &&
-                response.headers.location
-            ) {
-                response.resume();
-
-                return downloadFile(
-                    response.headers.location,
-                    destination
-                ).then(resolve).catch(reject);
-            }
-
-            if (response.statusCode !== 200) {
-                response.resume();
-                return reject(
-                    new Error(
-                        'GitHub returned HTTP ' + response.statusCode
-                    )
-                );
-            }
-
-            const file = fs.createWriteStream(destination);
-
-            response.pipe(file);
-
-            file.on('finish', () => {
-                file.close(resolve);
-            });
-
-            file.on('error', reject);
-
-        }).on('error', reject);
-    });
-}
-
-function runCommand(command) {
-    return new Promise((resolve, reject) => {
-        exec(command, {
-            maxBuffer: 10 * 1024 * 1024
-        }, (error, stdout, stderr) => {
-
-            if (error) {
-                return reject(error);
-            }
-
-            resolve({
-                stdout,
-                stderr
-            });
-        });
-    });
-}
-
-async function updateCommands() {
-
-    const tempDir = fs.mkdtempSync(
-        path.join(os.tmpdir(), 'oxbot-update-')
-    );
-
-    const zipFile = path.join(
-        tempDir,
-        'commands.zip'
-    );
-
-    const extractDir = path.join(
-        tempDir,
-        'extract'
-    );
-
-    try {
-
-        console.log('[restart] Downloading latest commands...');
-
-        await downloadFile(
-            GITHUB_ZIP,
-            zipFile
-        );
-
-        fs.mkdirSync(
-            extractDir,
-            { recursive: true }
-        );
-
-        await runCommand(
-            'unzip -q "' +
-            zipFile +
-            '" -d "' +
-            extractDir +
-            '"'
-        );
-
-        const folders = fs.readdirSync(extractDir);
-
-        const githubFolder = folders.find(
-            name => name.startsWith('commands-')
-        );
-
-        if (!githubFolder) {
-            throw new Error(
-                'GitHub commands folder was not found'
-            );
-        }
-
-        const sourceDir = path.join(
-            extractDir,
-            githubFolder
-        );
-
-        const files = fs.readdirSync(sourceDir);
-
-        for (const file of files) {
-
-            if (file === '.git') {
-                continue;
-            }
-
-            const source = path.join(
-                sourceDir,
-                file
-            );
-
-            const destination = path.join(
-                COMMANDS_DIR,
-                file
-            );
-
-            fs.rmSync(
-                destination,
-                {
-                    recursive: true,
-                    force: true
-                }
-            );
-
-            fs.cpSync(
-                source,
-                destination,
-                {
-                    recursive: true
-                }
-            );
-        }
-
-        console.log('[restart] Commands updated successfully.');
-
-    } finally {
-
-        fs.rmSync(
-            tempDir,
-            {
-                recursive: true,
-                force: true
-            }
-        );
-    }
-}
 
 async function execute(sock, msg, botData, args) {
 
@@ -187,37 +13,37 @@ async function execute(sock, msg, botData, args) {
         await sock.sendMessage(
             chatId,
             {
-                text: '🔄 *Updating commands...*'
+                text: '🔄 *Restarting...*'
             },
             { quoted: msg }
         );
 
-        await updateCommands();
+        setTimeout(() => {
 
-        await sock.sendMessage(
-            chatId,
-            {
-                text: '✅ *Commands updated successfully!*'
-            },
-            { quoted: msg }
-        );
+            exec('pm2 restart oxbot', (error) => {
+
+                if (error) {
+                    console.error(
+                        '[restart] PM2 restart failed:',
+                        error.message
+                    );
+                    return;
+                }
+
+                console.log(
+                    '[restart] OxBot restarted successfully.'
+                );
+
+            });
+
+        }, 1000);
 
     } catch (error) {
 
         console.error(
-            '[restart] Update failed:',
+            '[restart] Error:',
             error
         );
-
-        try {
-            await sock.sendMessage(
-                chatId,
-                {
-                    text: '❌ *Failed to update commands!*'
-                },
-                { quoted: msg }
-            );
-        } catch {}
 
     }
 
@@ -227,7 +53,7 @@ async function execute(sock, msg, botData, args) {
 module.exports = {
     name: 'restart',
     aliases: ['reboot', 'reload'],
-    desc: 'Update commands from GitHub',
+    desc: 'Restart OxBot',
     category: 'owner',
     execute
 };
